@@ -1,0 +1,1 @@
+docker run -d --name postgresmamor -p 5432:5432 postgres
