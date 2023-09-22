@@ -1,117 +1,75 @@
-import datetime
 import psycopg2
+
+# Define connection parameters
+DATABASE_SETTINGS = {
+    "database": "xcceleratedpostgresdb",
+    "user": "postgres",
+    "password": "AzerKimo2022@@@",
+    "host": "172.17.0.2",
+    "port": "5432"
+}
+
+# Create a connection and cursor object
+connection = psycopg2.connect(**DATABASE_SETTINGS)
+cursor = connection.cursor()
+
+# SQL to get median visits before order
+median_visits_sql = """
+WITH OrdersSessions AS (
+    SELECT customer_id, MIN(session_timestamp) as first_order_time
+    FROM sessions
+    WHERE event_type = 'ADD_PRODUCT_TO_CART'  -- Assuming this indicates a purchase
+    GROUP BY customer_id
+)
+SELECT 
+    customer_id, 
+    COUNT(session_id) as total_sessions_before_order
+FROM sessions
+JOIN OrdersSessions ON sessions.customer_id = OrdersSessions.customer_id
+WHERE session_timestamp < first_order_time
+GROUP BY sessions.customer_id
+"""
+
+# SQL to get median session duration before order
+median_duration_sql = """
+WITH OrdersSessions AS (
+    SELECT customer_id, MIN(session_timestamp) as first_order_time
+    FROM sessions
+    WHERE event_type = 'ADD_PRODUCT_TO_CART'  -- Assuming this indicates a purchase
+    GROUP BY customer_id
+)
+SELECT 
+    customer_id, 
+    AVG(session_end_time - session_start_time) as avg_session_duration
+FROM sessions
+JOIN OrdersSessions ON sessions.customer_id = OrdersSessions.customer_id
+WHERE session_timestamp < first_order_time
+GROUP BY sessions.customer_id
+"""
+
 from flask import Flask, jsonify
-from flask_sqlalchemy import SQLAlchemy
 
-# Database configuration
-DB_NAME = "xcceleratedpostgresdb"
-DB_USER = "postgres"
-DB_PASSWORD = "AzerKimo2022@@@"  # Consider using environment variables for sensitive info
-DB_HOST = "localhost"
-DB_PORT = "5432"
-
-# Create Flask app
 app = Flask(__name__)
 
-# SQLAlchemy configuration for PostgreSQL
-app.config['SQLALCHEMY_DATABASE_URI'] = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+@app.route("/metrics/orders", methods=["GET"])
+def metrics_orders():
+    # Fetch median visits before order
+    cursor.execute(median_visits_sql)
+    visits_data = cursor.fetchall()
+    visits_data = [item[1] for item in visits_data]
+    median_visits = sorted(visits_data)[len(visits_data) // 2] if visits_data else None
 
-# Initialize SQLAlchemy for the app
-db = SQLAlchemy(app)
+    # Fetch median session duration before order
+    cursor.execute(median_duration_sql)
+    duration_data = cursor.fetchall()
+    duration_data = [item[1].total_seconds() / 60 for item in duration_data]  # Convert to minutes
+    median_duration = sorted(duration_data)[len(duration_data) // 2] if duration_data else None
+    
+    return jsonify({
+        "median_visits_before_order": median_visits,
+        "median_session_duration_minutes_before_order": median_duration
+    })
 
-
-# Model for the 'sessions' table
-class Session(db.Model):
-    __tablename__ = 'sessions'
-    __table_args__ = {'schema': 'public'}
-    session_id = db.Column(db.Integer, primary_key=True)
-    customer_id = db.Column(db.Integer)
-    start_time = db.Column(db.DateTime)
-    end_time = db.Column(db.DateTime)
-    duration = db.Column(db.Integer)
-
-    def as_dict(self):
-        return {c.name: getattr(self, c.name) for c in self.__table__.columns}
-
-
-def get_db_connection():
-    """
-    Establish and return a connection to the PostgreSQL database.
-    """
-    return psycopg2.connect(
-        dbname=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        host=DB_HOST,
-        port=DB_PORT
-    )
-
-
-@app.route('/metrics/orders', methods=['GET'])
-def get_order_metrics():
-    """
-    Return metrics on median visits and session duration before an order.
-    """
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
-        # SQL queries to calculate metrics
-        median_visits_query = """
-        SELECT
-            percentile_cont(0.5) WITHIN GROUP (ORDER BY visits) AS median_visits
-        FROM (
-            SELECT
-                customer_id,
-                COUNT(DISTINCT session_id) AS visits
-            FROM
-                sessions
-            WHERE
-                customer_id IS NOT NULL
-            GROUP BY
-                customer_id
-        ) subquery
-        """
-        
-        median_duration_query = """
-        SELECT
-            percentile_cont(0.5) WITHIN GROUP (ORDER BY duration) AS median_duration_minutes
-        FROM (
-            SELECT
-                customer_id,
-                MIN(duration) AS duration
-            FROM
-                sessions
-            WHERE
-                customer_id IS NOT NULL
-            GROUP BY
-                customer_id
-        ) subquery
-        """
-
-        cursor.execute(median_visits_query)
-        median_visits = cursor.fetchone()[0]
-
-        cursor.execute(median_duration_query)
-        median_duration_minutes = cursor.fetchone()[0]
-
-        metrics = {
-            "median_visits_before_order": median_visits,
-            "median_session_duration_minutes_before_order": median_duration_minutes
-        }
-
-    except psycopg2.Error as e:
-        metrics = {"error": str(e)}
-
-    finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
-
-    return jsonify(metrics)
-
-
+# Run the server on port 5000
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(port=5000)
